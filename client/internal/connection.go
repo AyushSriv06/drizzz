@@ -16,7 +16,9 @@ import (
 var (
 	currentRoomID   string
 	currentRoomName string
+	myUserID        string
 )
+
 func Connect(address string) (net.Conn, error) {
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
@@ -59,7 +61,7 @@ func UserInput(attribute string, conn net.Conn) error {
 		for {
 			// Check if path exists
 			if _, err := os.Stat(input); os.IsNotExist(err) {
-				fmt.Println(utils.ErrorColor("❌ Error: Directory does not exist")) 
+				fmt.Println(utils.ErrorColor("❌ Error: Directory does not exist"))
 				fmt.Println("Enter a valid " + attribute + ": ")
 				input, _ = reader.ReadString('\n')
 				input = strings.TrimSpace(input)
@@ -99,6 +101,13 @@ func ReadLoop(conn net.Conn) {
 		}
 		message := string(buffer[:n])
 		switch {
+		case strings.HasPrefix(message, "/USERID"):
+			parts := strings.SplitN(message, " ", 2)
+			if len(parts) == 2 {
+				myUserID = strings.TrimSpace(parts[1])
+				fmt.Println(utils.SuccessColor("[Info] Your user ID is: "), utils.CommandColor(myUserID))
+			}
+			continue
 		case strings.HasPrefix(message, "/FILE_RESPONSE"):
 			fmt.Println(utils.InfoColor("📥 File transfer starting..."))
 			args := strings.SplitN(message, " ", 5)
@@ -146,9 +155,9 @@ func ReadLoop(conn net.Conn) {
 				roomID := args[1]
 				roomName := args[2]
 				creatorName := args[3]
-				fmt.Printf("%s Room '%s' created by %s (ID: %s)\n", 
-					utils.SuccessColor("🏠"), 
-					utils.InfoColor(roomName), 
+				fmt.Printf("%s Room '%s' created by %s (ID: %s)\n",
+					utils.SuccessColor("🏠"),
+					utils.InfoColor(roomName),
 					utils.UserColor(creatorName),
 					utils.CommandColor(roomID))
 				fmt.Printf("  Use %s to join this room\n", utils.CommandColor("/joinroom "+roomID))
@@ -161,11 +170,11 @@ func ReadLoop(conn net.Conn) {
 				roomName := args[2]
 				currentRoomID = roomID
 				currentRoomName = roomName
-				fmt.Printf("%s Joined room '%s' (ID: %s)\n", 
-					utils.SuccessColor("✅"), 
+				fmt.Printf("%s Joined room '%s' (ID: %s)\n",
+					utils.SuccessColor("✅"),
 					utils.InfoColor(roomName),
 					utils.CommandColor(roomID))
-				fmt.Printf("  Messages will now be sent to this room. Use %s to leave.\n", 
+				fmt.Printf("  Messages will now be sent to this room. Use %s to leave.\n",
 					utils.CommandColor("/leaveroom"))
 			}
 			continue
@@ -173,8 +182,8 @@ func ReadLoop(conn net.Conn) {
 			args := strings.SplitN(message, " ", 2)
 			if len(args) >= 2 {
 				roomID := args[1]
-				fmt.Printf("%s Left room %s\n", 
-					utils.WarningColor("👋"), 
+				fmt.Printf("%s Left room %s\n",
+					utils.WarningColor("👋"),
 					utils.CommandColor(roomID))
 				currentRoomID = ""
 				currentRoomName = ""
@@ -303,6 +312,24 @@ func ReadLoop(conn net.Conn) {
 			fmt.Println(utils.InfoColor("📤 Download request from"), utils.UserColor(userId), utils.InfoColor("for"), utils.InfoColor(filePath))
 			HandleDownloadResponse(conn, userId, filePath)
 			continue
+		case strings.HasPrefix(message, "ROOM_MEMBERS_RESPONSE"):
+			args := strings.SplitN(message, " ", 3)
+			if len(args) != 3 {
+				fmt.Println(utils.ErrorColor("❌ Invalid ROOM_MEMBERS_RESPONSE"))
+				continue
+			}
+			userIDs := strings.Split(args[2], ",")
+			fmt.Println(utils.InfoColor("[Debug] ROOM_MEMBERS_RESPONSE userIDs:"), userIDs)
+			for _, uid := range userIDs {
+				if uid == myUserID || uid == "" {
+					continue
+				}
+				fmt.Println(utils.InfoColor("[Debug] Sending file to userID:"), uid)
+				HandleSendFile(conn, uid, pendingRoomFileSend.filePath)
+			}
+			pendingRoomFileSend.roomID = ""
+			pendingRoomFileSend.filePath = ""
+			continue
 		default:
 			if strings.HasPrefix(message, "[Room ") {
 				// Room message
@@ -320,27 +347,28 @@ func ReadLoop(conn net.Conn) {
 	}
 }
 
+// 1. Update handleOnlineUsersList to only display users, not prompt for input
 func handleOnlineUsersList(message string) {
 	parts := strings.SplitN(message, " ", 2)
 	if len(parts) < 2 {
 		fmt.Println(utils.ErrorColor("❌ No users available for room creation"))
 		return
 	}
-	
+
 	userPairs := strings.Split(parts[1], " ")
 	if len(userPairs) == 0 {
 		fmt.Println(utils.ErrorColor("❌ No other users online"))
 		return
 	}
-	
-	fmt.Println(utils.HeaderColor("\n👥 Select users for the room:"))
+
+	fmt.Println(utils.HeaderColor("\n👥 Online users:"))
 	fmt.Println(utils.InfoColor("--------------------------------"))
-	
+
 	var users []struct {
 		ID   string
 		Name string
 	}
-	
+
 	for _, pair := range userPairs {
 		if pair == "" {
 			continue
@@ -351,70 +379,38 @@ func handleOnlineUsersList(message string) {
 				ID   string
 				Name string
 			}{parts[0], parts[1]})
-			fmt.Printf("%s %s %s %s\n", 
+			fmt.Printf("%s %s %s %s\n",
 				utils.CommandColor(fmt.Sprintf("[%d]", len(users))),
 				utils.UserColor(parts[1]),
 				utils.InfoColor("(ID:"),
 				utils.InfoColor(parts[0]+")"))
 		}
 	}
-	
+
 	if len(users) == 0 {
 		fmt.Println(utils.ErrorColor("❌ No other users online"))
 		return
 	}
-	
 	fmt.Println(utils.InfoColor("--------------------------------"))
-	fmt.Print(utils.CommandColor("Enter room name: "))
-	
-	reader := bufio.NewReader(os.Stdin)
-	roomName, _ := reader.ReadString('\n')
-	roomName = strings.TrimSpace(roomName)
-	
-	if roomName == "" {
-		fmt.Println(utils.ErrorColor("❌ Room name cannot be empty"))
-		return
-	}
-	
-	fmt.Print(utils.CommandColor("Select users (comma-separated numbers, e.g., 1,3,5): "))
-	selection, _ := reader.ReadString('\n')
-	selection = strings.TrimSpace(selection)
-	
-	if selection == "" {
-		fmt.Println(utils.ErrorColor("❌ No users selected"))
-		return
-	}
-	
-	selectedNumbers := strings.Split(selection, ",")
-	var selectedUserIDs []string
-	
-	for _, numStr := range selectedNumbers {
-		numStr = strings.TrimSpace(numStr)
-		num, err := strconv.Atoi(numStr)
-		if err != nil || num < 1 || num > len(users) {
-			fmt.Printf("%s Invalid selection: %s\n", utils.ErrorColor("❌"), numStr)
-			continue
-		}
-		selectedUserIDs = append(selectedUserIDs, users[num-1].ID)
-	}
-	
-	if len(selectedUserIDs) == 0 {
-		fmt.Println(utils.ErrorColor("❌ No valid users selected"))
-		return
-	}
-	
-	// Send room creation request
-	createRoomMsg := fmt.Sprintf("/CREATE_ROOM %s %s", roomName, strings.Join(selectedUserIDs, ","))
-	// This will be sent via the connection in WriteLoop
-	fmt.Printf("%s Creating room '%s' with %d users...\n", 
-		utils.InfoColor("🏠"), 
-		utils.InfoColor(roomName), 
-		len(selectedUserIDs))
-	
-	// We need to send this message through the connection
-	// This is a bit tricky since we're in ReadLoop, but we'll handle it in WriteLoop
-	pendingRoomCreation = createRoomMsg
+
+	// Store the list for WriteLoop to use
+	onlineUsersForRoom = users
+	roomUserListReady = true
 }
+
+// 2. Add state for room creation
+var (
+	pendingRoomCreation string
+	pendingRoomFileSend struct {
+		roomID   string
+		filePath string
+	}
+	onlineUsersForRoom []struct {
+		ID   string
+		Name string
+	}
+	roomUserListReady bool
+)
 
 func handleRoomsList(message string) {
 	parts := strings.SplitN(message, " ", 2)
@@ -422,12 +418,12 @@ func handleRoomsList(message string) {
 		fmt.Println(utils.InfoColor("📭 You are not a member of any rooms"))
 		return
 	}
-	
+
 	roomPairs := strings.Split(parts[1], " ")
-	
+
 	fmt.Println(utils.HeaderColor("\n🏠 Your Rooms:"))
 	fmt.Println(utils.InfoColor("---------------"))
-	
+
 	for _, pair := range roomPairs {
 		if pair == "" {
 			continue
@@ -437,13 +433,13 @@ func handleRoomsList(message string) {
 			roomID := parts[0]
 			roomName := parts[1]
 			memberCount := parts[2]
-			
+
 			status := ""
 			if roomID == currentRoomID {
 				status = utils.SuccessColor(" [CURRENT]")
 			}
-			
-			fmt.Printf("%s %s %s %s%s\n", 
+
+			fmt.Printf("%s %s %s %s%s\n",
 				utils.InfoColor("🏠"),
 				utils.InfoColor(roomName),
 				utils.CommandColor("(ID: "+roomID+")"),
@@ -455,11 +451,10 @@ func handleRoomsList(message string) {
 	fmt.Printf("Use %s to join a room\n", utils.CommandColor("/joinroom <roomID>"))
 }
 
-var pendingRoomCreation string
+// 3. In WriteLoop, after /createroom, wait for user list, then prompt for selection and room name
 func WriteLoop(conn net.Conn) {
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		// Check for pending room creation
 		if pendingRoomCreation != "" {
 			_, err := conn.Write([]byte(pendingRoomCreation))
 			if err != nil {
@@ -468,14 +463,12 @@ func WriteLoop(conn net.Conn) {
 			pendingRoomCreation = ""
 			continue
 		}
-		
-		// Show current context in prompt
+
 		prompt := ">>> "
 		if currentRoomID != "" {
 			prompt = fmt.Sprintf("[%s] >>> ", utils.InfoColor(currentRoomName))
 		}
 		fmt.Print(utils.CommandColor(prompt))
-		
 		fmt.Print(utils.CommandColor(">>> "))
 		message, _ := reader.ReadString('\n')
 		message = strings.TrimSpace(message)
@@ -489,10 +482,57 @@ func WriteLoop(conn net.Conn) {
 			continue
 		case message == "/createroom":
 			fmt.Println(utils.InfoColor("🏠 Fetching online users..."))
+			roomUserListReady = false
 			_, err := conn.Write([]byte("/GET_ONLINE_USERS"))
 			if err != nil {
 				fmt.Println(utils.ErrorColor("❌ Error fetching users:"), err)
+				continue
 			}
+			// Wait for user list to be ready
+			for !roomUserListReady {
+				time.Sleep(100 * time.Millisecond)
+			}
+			if len(onlineUsersForRoom) == 0 {
+				fmt.Println(utils.ErrorColor("❌ No other users online"))
+				continue
+			}
+			// Prompt for user selection
+			fmt.Print(utils.CommandColor("Select users (comma-separated numbers, e.g., 1,3,5): "))
+			selection, _ := reader.ReadString('\n')
+			selection = strings.TrimSpace(selection)
+			if selection == "" {
+				fmt.Println(utils.ErrorColor("❌ No users selected"))
+				continue
+			}
+			selectedNumbers := strings.Split(selection, ",")
+			var selectedUserIDs []string
+			for _, numStr := range selectedNumbers {
+				numStr = strings.TrimSpace(numStr)
+				num, err := strconv.Atoi(numStr)
+				if err != nil || num < 1 || num > len(onlineUsersForRoom) {
+					fmt.Printf("%s Invalid selection: %s\n", utils.ErrorColor("❌"), numStr)
+					continue
+				}
+				selectedUserIDs = append(selectedUserIDs, onlineUsersForRoom[num-1].ID)
+			}
+			if len(selectedUserIDs) == 0 {
+				fmt.Println(utils.ErrorColor("❌ No valid users selected"))
+				continue
+			}
+			// Prompt for room name
+			fmt.Print(utils.CommandColor("Enter room name: "))
+			roomName, _ := reader.ReadString('\n')
+			roomName = strings.TrimSpace(roomName)
+			if roomName == "" {
+				fmt.Println(utils.ErrorColor("❌ Room name cannot be empty"))
+				continue
+			}
+			pendingRoomCreation = fmt.Sprintf("/CREATE_ROOM %s %s", roomName, strings.Join(selectedUserIDs, ","))
+			fmt.Printf("%s Creating room '%s' with %d users...\n",
+				utils.InfoColor("🏠"),
+				utils.InfoColor(roomName),
+				len(selectedUserIDs))
+			roomUserListReady = false
 			continue
 		case strings.HasPrefix(message, "/joinroom"):
 			args := strings.SplitN(message, " ", 2)
@@ -589,6 +629,21 @@ func WriteLoop(conn net.Conn) {
 			}
 			transferID := args[1]
 			HandleResumeTransfer(transferID)
+			continue
+		case strings.HasPrefix(message, "/sendfiletoroom"):
+			args := strings.SplitN(message, " ", 3)
+			if len(args) != 3 {
+				fmt.Println(utils.ErrorColor("❌ Invalid arguments. Use: /sendfiletoroom <roomID> <filePath>"))
+				continue
+			}
+			roomID := args[1]
+			filePath := args[2]
+			pendingRoomFileSend.roomID = roomID
+			pendingRoomFileSend.filePath = filePath
+			_, err := conn.Write([]byte("/ROOM_MEMBERS " + roomID + "\n"))
+			if err != nil {
+				fmt.Println(utils.ErrorColor("❌ Error requesting room members:"), err)
+			}
 			continue
 		default:
 			if message != "" {
