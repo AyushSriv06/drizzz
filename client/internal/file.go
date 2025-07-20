@@ -106,7 +106,7 @@ func HandleSendFile(conn net.Conn, recipientId, filePath string) {
 	RemoveTransfer(transferID)
 }
 
-func HandleFileTransfer(conn net.Conn, recipientId, fileName string, fileSize int64, storeFilePath string) {
+func HandleFileTransfer(reader io.Reader, recipientId, fileName string, fileSize int64, storeFilePath string) {
 	// Get checksum and transfer ID from the split content
 	parts := strings.SplitN(fileName, "|", 3)
 	checksum := ""
@@ -157,7 +157,7 @@ func HandleFileTransfer(conn net.Conn, recipientId, fileName string, fileSize in
 		Checksum:      checksum,
 		StartTime:     time.Now(),
 		File:          file,
-		Connection:    conn,
+		Connection:    nil, // We don't need the connection for receiving
 		ProgressBar:   bar,
 	}
 
@@ -166,7 +166,7 @@ func HandleFileTransfer(conn net.Conn, recipientId, fileName string, fileSize in
 	writer := NewCheckpointedWriter(file, transfer, 32768) // 32KB chunks
 
 	// Write to file and update progress bar simultaneously
-	n, err := io.CopyN(writer, io.TeeReader(conn, bar), fileSize)
+	n, err := io.CopyN(writer, io.TeeReader(reader, bar), fileSize)
 
 	if err != nil {
 		UpdateTransferStatus(transferID, Failed)

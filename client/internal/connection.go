@@ -92,14 +92,14 @@ func UserInput(attribute string, conn net.Conn) error {
 }
 
 func ReadLoop(conn net.Conn) {
+	reader := bufio.NewReader(conn)
 	for {
-		buffer := make([]byte, 1024)
-		n, err := conn.Read(buffer)
+		message, err := reader.ReadString('\n')
 		if err != nil {
 			fmt.Println(utils.ErrorColor("❌ Connection lost:"), err)
 			return
 		}
-		message := string(buffer[:n])
+		message = strings.TrimSpace(message)
 		switch {
 		case strings.HasPrefix(message, "/USERID"):
 			parts := strings.SplitN(message, " ", 2)
@@ -125,7 +125,7 @@ func ReadLoop(conn net.Conn) {
 				continue
 			}
 
-			HandleFileTransfer(conn, recipientId, fileName, int64(fileSize), storeFilePath)
+			HandleFileTransfer(reader, recipientId, fileName, int64(fileSize), storeFilePath)
 			continue
 		case strings.HasPrefix(message, "/FOLDER_RESPONSE"):
 			fmt.Println(utils.InfoColor("📥 Folder transfer starting..."))
@@ -143,7 +143,7 @@ func ReadLoop(conn net.Conn) {
 				fmt.Println(utils.ErrorColor("❌ Invalid folderSize. Use: /FOLDER_RESPONSE <userId> <folderName> <folderSize> <storeFilePath>"))
 				continue
 			}
-			HandleFolderTransfer(conn, recipientId, folderName, folderSize, storeFilePath)
+			HandleFolderTransfer(reader, recipientId, folderName, folderSize, storeFilePath)
 			continue
 		case strings.HasPrefix(message, "ONLINE_USERS_LIST"):
 			// Handle online users list for room creation
@@ -200,7 +200,7 @@ func ReadLoop(conn net.Conn) {
 			fmt.Println(utils.ErrorColor("❌ You are not a member of this room"))
 			continue
 		case strings.HasPrefix(message, "PING"):
-			_, err = conn.Write([]byte("PONG\n"))
+			_, err = conn.Write([]byte("PONG"))
 			if err != nil {
 				fmt.Println(utils.ErrorColor("❌ Error responding to heartbeat:"), err)
 				continue
@@ -212,18 +212,18 @@ func ReadLoop(conn net.Conn) {
 
 			// Read the complete user list with timeout
 			userList := ""
-			tempBuf := make([]byte, 1024)
 			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 			for {
-				m, err := conn.Read(tempBuf)
+				line, err := reader.ReadString('\n')
 				if err != nil {
 					break // Break on error (likely timeout)
 				}
-				userList += string(tempBuf[:m])
-				if m < 1024 {
+				line = strings.TrimSpace(line)
+				if line == "" {
 					break // All data received
 				}
+				userList += line + "\n"
 			}
 
 			// Reset the deadline

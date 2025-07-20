@@ -117,7 +117,7 @@ func HandleSendFolder(conn net.Conn, recipientId, folderPath string) {
 	RemoveTransfer(transferID)
 }
 
-func HandleFolderTransfer(conn net.Conn, recipientId, folderName string, folderSize int64, storeFilePath string) {
+func HandleFolderTransfer(reader io.Reader, recipientId, folderName string, folderSize int64, storeFilePath string) {
 	// Extract checksum and transfer ID if present
 	checksum := ""
 	transferID := ""
@@ -169,7 +169,7 @@ func HandleFolderTransfer(conn net.Conn, recipientId, folderName string, folderS
 		Checksum:      checksum,
 		StartTime:     time.Now(),
 		File:          zipFile,
-		Connection:    conn,
+		Connection:    nil, // We don't need the connection for receiving
 		ProgressBar:   bar,
 	}
 
@@ -178,7 +178,7 @@ func HandleFolderTransfer(conn net.Conn, recipientId, folderName string, folderS
 	writer := NewCheckpointedWriter(zipFile, transfer, 32768) // 32KB chunks
 
 	// Receive the zip file data with progress
-	n, err := io.CopyN(writer, io.TeeReader(conn, bar), folderSize)
+	n, err := io.CopyN(writer, io.TeeReader(reader, bar), folderSize)
 	zipFile.Close()
 
 	if err != nil {
