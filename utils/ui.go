@@ -95,6 +95,11 @@ func PrintHelp() {
 	fmt.Println(HeaderColor("\n📚 DrizLink Help - Available Commands 📚"))
 	fmt.Println(InfoColor("------------------------------------------------"))
 	
+	fmt.Println(HeaderColor("\n🔍 Server Discovery:"))
+	fmt.Printf("  %s - Servers are automatically discovered via UDP broadcast\n", InfoColor("• Auto-discovery"))
+	fmt.Printf("  %s - No need to manually share IP addresses\n", InfoColor("• Network scanning"))
+	fmt.Printf("  %s - Fallback to manual entry if needed\n", InfoColor("• Manual override"))
+	
 	fmt.Println(HeaderColor("\n🌐 General Commands:"))
 	fmt.Printf("  %s - Show online users\n", CommandColor("/status"))
 	fmt.Printf("  %s - Show this help message\n", CommandColor("/help"))

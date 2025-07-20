@@ -5,6 +5,7 @@ A peer-to-peer file sharing application with integrated chat functionality, allo
 ## ✨ Features
 
 - **👤 User Authentication**: Connect with a username and maintain persistent sessions
+- **🔍 Auto Server Discovery**: Automatically find DrizLink servers on local network via UDP broadcast
 - **💬 Real-time Chat**: Send and receive messages with all connected users
 - **📁 File Sharing**: Transfer files directly between users
 - **📂 Folder Sharing**: Share entire folders with other users
@@ -46,14 +47,22 @@ go run ./server/cmd --port 3000
 
 ### Connecting as a Client 📱
 ```bash
-# Connect to local server with default port
-go run ./client/cmd --server localhost:8080
+# Auto-discover servers on local network (recommended)
+go run ./client/cmd
 
-# Connect to remote server
-go run ./client/cmd --server 192.168.0.116:4000
-go run ./client/cmd --server 192.168.0.116:4000
+# Connect to specific server (optional)
+go run ./client/cmd --server localhost:8080
+go run ./client/cmd --server 192.168.1.100:8080
 
 ```
+
+### 🔍 Server Discovery
+
+DrizLink now features **automatic server discovery** via UDP broadcast:
+- **No IP sharing required**: Clients automatically scan the local network for available servers
+- **Easy selection**: Choose from a list of discovered servers or enter manually
+- **Fallback support**: Manual server entry is still available if auto-discovery fails
+- **Network scanning**: Servers broadcast their presence every 5 seconds on UDP port 9876
 
 The application will validate:
 - Server availability before client connection attempts
@@ -64,6 +73,7 @@ The application will validate:
 
 The application follows a hybrid P2P architecture:
 - 🌐 A central server handles user registration, discovery, and connection brokering
+- 📡 UDP broadcast enables automatic server discovery on local networks
 - ↔️ File and folder transfers occur directly between peers
 - 💓 Server maintains connection status through regular heartbeat checks
 
@@ -112,6 +122,7 @@ The application follows a hybrid P2P architecture:
 
 The application implements basic reconnection security by tracking IP addresses and user sessions.
 
+- **🔍 Network Discovery**: UDP broadcast messages are limited to local network scope for security
 - **📁 Folder Path Validation**: The application verifies that shared folder paths exist before establishing a connection. If an invalid path is provided, the user will be prompted to enter a valid folder path.
 - **🔌 Server Availability Check**: Client automatically verifies server availability before attempting connection, preventing connection errors.
 - **🚫 Port Conflict Prevention**: Server detects if a port is already in use and alerts the user to choose another port.

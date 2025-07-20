@@ -3,6 +3,7 @@ package connection
 import (
 	"drizlink/helper"
 	"drizlink/server/interfaces"
+	"drizlink/utils"
 	"fmt"
 	"net"
 	"strconv"
@@ -31,7 +32,10 @@ func Start(server *interfaces.Server) {
 	}
 
 	defer listen.Close()
-	fmt.Println("Server started on", server.Address)
+	fmt.Println(utils.SuccessColor("✅ Server started on"), utils.InfoColor(server.Address))
+	
+	// Start UDP broadcast for server discovery
+	go StartDiscoveryBroadcast(server.Address)
 
 	for {
 		conn, err := listen.Accept()
@@ -268,4 +272,73 @@ func StartHeartBeat(interval time.Duration, server *interfaces.Server) {
 			server.Mutex.Unlock()
 		}
 	}()
+}
+
+// StartDiscoveryBroadcast continuously broadcasts server presence via UDP
+func StartDiscoveryBroadcast(serverAddress string) {
+	// Extract port from server address
+	port := strings.TrimPrefix(serverAddress, ":")
+	
+	// Get the server's actual IP address
+	serverIP, err := getServerIP()
+	if err != nil {
+		fmt.Println(utils.ErrorColor("❌ Error getting server IP for broadcast:"), err)
+		return
+	}
+	
+	// Create UDP connection for broadcasting
+	conn, err := net.Dial("udp", "255.255.255.255:9876")
+	if err != nil {
+		fmt.Println(utils.ErrorColor("❌ Error creating UDP broadcast connection:"), err)
+		return
+	}
+	defer conn.Close()
+	
+	// Broadcast message format: DRIZLINK_SERVER:<server_ip>:<server_port>
+	broadcastMsg := fmt.Sprintf("DRIZLINK_SERVER:%s:%s", serverIP, port)
+	
+	fmt.Println(utils.InfoColor("📡 Broadcasting server presence on UDP port 9876"))
+	fmt.Println(utils.InfoColor("   Message:"), utils.CommandColor(broadcastMsg))
+	
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		_, err := conn.Write([]byte(broadcastMsg))
+		if err != nil {
+			fmt.Println(utils.ErrorColor("❌ Error broadcasting server presence:"), err)
+			continue
+		}
+	}
+}
+
+// getServerIP returns the server's local IP address
+func getServerIP() (string, error) {
+	// Get all network interfaces
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	
+	for _, iface := range interfaces {
+		// Skip loopback and down interfaces
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					return ipnet.IP.String(), nil
+				}
+			}
+		}
+	}
+	
+	return "", fmt.Errorf("no suitable network interface found")
 }
