@@ -105,6 +105,12 @@ func PrintHelp() {
 	fmt.Printf("  %s - Show this help message\n", CommandColor("/help"))
 	fmt.Printf("  %s - Disconnect and exit\n", CommandColor("exit"))
 	
+	fmt.Println(HeaderColor("\n🏠 Room Commands:"))
+	fmt.Printf("  %s - Create a new room with selected users\n", CommandColor("/createroom"))
+	fmt.Printf("  %s - Join a specific room\n", CommandColor("/joinroom <roomID>"))
+	fmt.Printf("  %s - Leave current room\n", CommandColor("/leaveroom"))
+	fmt.Printf("  %s - List your rooms\n", CommandColor("/rooms"))
+	
 	fmt.Println(HeaderColor("\n📁 File Operations:"))
 	fmt.Printf("  %s - Browse user's shared files\n", CommandColor("/lookup <userId>"))
 	fmt.Printf("  %s - Send a file to user\n", CommandColor("/sendfile <userId> <filePath>"))
@@ -117,7 +123,7 @@ func PrintHelp() {
 	fmt.Printf("  %s - Resume a paused transfer\n", CommandColor("/resume <transferId>"))
 	
 	fmt.Println(InfoColor("------------------------------------------------"))
-	fmt.Println(InfoColor("Type a message and press Enter to send to everyone\n"))
+	fmt.Println(InfoColor("Type a message and press Enter to send to current room or everyone\n"))
 }
 
 // PrintBanner prints the application banner

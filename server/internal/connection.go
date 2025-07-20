@@ -5,6 +5,7 @@ import (
 	"drizlink/server/interfaces"
 	"drizlink/utils"
 	"fmt"
+	"math/rand"
 	"net"
 	"strconv"
 	"strings"
@@ -32,6 +33,10 @@ func Start(server *interfaces.Server) {
 	}
 
 	defer listen.Close()
+	
+	// Initialize rooms map
+	server.Rooms = make(map[string]*interfaces.Room)
+	
 	fmt.Println(utils.SuccessColor("✅ Server started on"), utils.InfoColor(server.Address))
 	
 	// Start UDP broadcast for server discovery
@@ -117,6 +122,113 @@ func HandleConnection(conn net.Conn, server *interfaces.Server) {
 	handleUserMessages(conn, user, server)
 }
 
+// Room management functions
+func CreateRoom(server *interfaces.Server, roomName string, creatorID string, memberIDs []string) (*interfaces.Room, error) {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+	
+	// Generate unique room ID
+	roomID := generateRoomID()
+	
+	// Create room
+	room := &interfaces.Room{
+		ID:        roomID,
+		Name:      roomName,
+		Members:   make(map[string]*interfaces.User),
+		CreatedBy: creatorID,
+		CreatedAt: time.Now().Format("2006-01-02 15:04:05"),
+	}
+	
+	// Add creator to room
+	if creator, exists := server.Connections[creatorID]; exists {
+		room.Members[creatorID] = creator
+	}
+	
+	// Add selected members to room
+	for _, memberID := range memberIDs {
+		if user, exists := server.Connections[memberID]; exists && user.IsOnline {
+			room.Members[memberID] = user
+		}
+	}
+	
+	// Store room
+	server.Rooms[roomID] = room
+	
+	return room, nil
+}
+
+func generateRoomID() string {
+	return fmt.Sprintf("room_%d", rand.Intn(100000))
+}
+
+func AddUserToRoom(server *interfaces.Server, roomID string, userID string) error {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+	
+	room, exists := server.Rooms[roomID]
+	if !exists {
+		return fmt.Errorf("room not found")
+	}
+	
+	user, exists := server.Connections[userID]
+	if !exists {
+		return fmt.Errorf("user not found")
+	}
+	
+	room.Mutex.Lock()
+	room.Members[userID] = user
+	room.Mutex.Unlock()
+	
+	return nil
+}
+
+func RemoveUserFromRoom(server *interfaces.Server, roomID string, userID string) error {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+	
+	room, exists := server.Rooms[roomID]
+	if !exists {
+		return fmt.Errorf("room not found")
+	}
+	
+	room.Mutex.Lock()
+	delete(room.Members, userID)
+	room.Mutex.Unlock()
+	
+	return nil
+}
+
+func BroadcastRoomMessage(roomID string, senderUsername string, content string, server *interfaces.Server, sender *interfaces.User) {
+	server.Mutex.Lock()
+	room, exists := server.Rooms[roomID]
+	server.Mutex.Unlock()
+	
+	if !exists {
+		return
+	}
+	
+	room.Mutex.RLock()
+	defer room.Mutex.RUnlock()
+	
+	for _, member := range room.Members {
+		if member.IsOnline && member != sender {
+			_, _ = member.Conn.Write([]byte(fmt.Sprintf("[Room %s] %s: %s\n", room.Name, senderUsername, content)))
+		}
+	}
+}
+
+func GetOnlineUsersList(server *interfaces.Server) []interfaces.User {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+	
+	var users []interfaces.User
+	for _, user := range server.Connections {
+		if user.IsOnline {
+			users = append(users, *user)
+		}
+	}
+	return users
+}
 func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces.Server) {
 	for {
 		buffer := make([]byte, 1024)
@@ -208,6 +320,141 @@ func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces
 				}
 			}
 			continue
+		case strings.HasPrefix(messageContent, "/GET_ONLINE_USERS"):
+			users := GetOnlineUsersList(server)
+			response := "ONLINE_USERS_LIST"
+			for _, u := range users {
+				if u.UserId != user.UserId { // Don't include the requesting user
+					response += fmt.Sprintf(" %s|%s", u.UserId, u.Username)
+				}
+			}
+			response += "\n"
+			_, err = conn.Write([]byte(response))
+			if err != nil {
+				fmt.Println("Error sending online users list:", err)
+			}
+			continue
+		case strings.HasPrefix(messageContent, "/CREATE_ROOM"):
+			args := strings.SplitN(messageContent, " ", 3)
+			if len(args) < 3 {
+				fmt.Println("Invalid arguments. Use: /CREATE_ROOM <roomName> <userID1,userID2,...>")
+				continue
+			}
+			roomName := args[1]
+			memberIDsStr := args[2]
+			memberIDs := strings.Split(memberIDsStr, ",")
+			
+			room, err := CreateRoom(server, roomName, user.UserId, memberIDs)
+			if err != nil {
+				fmt.Printf("Error creating room: %v\n", err)
+				continue
+			}
+			
+			// Notify all room members about room creation
+			for memberID, member := range room.Members {
+				if member.IsOnline {
+					notification := fmt.Sprintf("ROOM_CREATED %s %s %s\n", room.ID, room.Name, user.Username)
+					_, err = member.Conn.Write([]byte(notification))
+					if err != nil {
+						fmt.Printf("Error notifying user %s about room creation: %v\n", memberID, err)
+					}
+				}
+			}
+			continue
+		case strings.HasPrefix(messageContent, "/JOIN_ROOM"):
+			args := strings.SplitN(messageContent, " ", 2)
+			if len(args) != 2 {
+				fmt.Println("Invalid arguments. Use: /JOIN_ROOM <roomID>")
+				continue
+			}
+			roomID := strings.TrimSpace(args[1])
+			
+			server.Mutex.Lock()
+			room, exists := server.Rooms[roomID]
+			server.Mutex.Unlock()
+			
+			if !exists {
+				_, err = conn.Write([]byte("ROOM_NOT_FOUND\n"))
+				if err != nil {
+					fmt.Printf("Error sending room not found message: %v\n", err)
+				}
+				continue
+			}
+			
+			// Check if user is a member of the room
+			room.Mutex.RLock()
+			_, isMember := room.Members[user.UserId]
+			room.Mutex.RUnlock()
+			
+			if !isMember {
+				_, err = conn.Write([]byte("NOT_ROOM_MEMBER\n"))
+				if err != nil {
+					fmt.Printf("Error sending not member message: %v\n", err)
+				}
+				continue
+			}
+			
+			user.CurrentRoomID = roomID
+			_, err = conn.Write([]byte(fmt.Sprintf("ROOM_JOINED %s %s\n", roomID, room.Name)))
+			if err != nil {
+				fmt.Printf("Error sending room joined confirmation: %v\n", err)
+			}
+			continue
+		case strings.HasPrefix(messageContent, "/LEAVE_ROOM"):
+			if user.CurrentRoomID != "" {
+				oldRoomID := user.CurrentRoomID
+				user.CurrentRoomID = ""
+				_, err = conn.Write([]byte(fmt.Sprintf("ROOM_LEFT %s\n", oldRoomID)))
+				if err != nil {
+					fmt.Printf("Error sending room left confirmation: %v\n", err)
+				}
+			}
+			continue
+		case strings.HasPrefix(messageContent, "/LIST_ROOMS"):
+			server.Mutex.Lock()
+			response := "ROOMS_LIST"
+			for roomID, room := range server.Rooms {
+				room.Mutex.RLock()
+				if _, isMember := room.Members[user.UserId]; isMember {
+					response += fmt.Sprintf(" %s|%s|%d", roomID, room.Name, len(room.Members))
+				}
+				room.Mutex.RUnlock()
+			}
+			server.Mutex.Unlock()
+			response += "\n"
+			_, err = conn.Write([]byte(response))
+			if err != nil {
+				fmt.Printf("Error sending rooms list: %v\n", err)
+			}
+			continue
+		case strings.HasPrefix(messageContent, "/ROOM_MESSAGE"):
+			args := strings.SplitN(messageContent, " ", 3)
+			if len(args) != 3 {
+				fmt.Println("Invalid arguments. Use: /ROOM_MESSAGE <roomID> <content>")
+				continue
+			}
+			roomID := args[1]
+			content := args[2]
+			
+			// Verify user is member of the room
+			server.Mutex.Lock()
+			room, exists := server.Rooms[roomID]
+			server.Mutex.Unlock()
+			
+			if !exists {
+				continue
+			}
+			
+			room.Mutex.RLock()
+			_, isMember := room.Members[user.UserId]
+			room.Mutex.RUnlock()
+			
+			if !isMember {
+				continue
+			}
+			
+			BroadcastRoomMessage(roomID, user.Username, content, server, user)
+			continue
 		case strings.HasPrefix(messageContent, "/LOOK"):
 			args := strings.SplitN(messageContent, " ", 2)
 			if len(args) != 2 {
@@ -239,7 +486,12 @@ func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces
 			HandleDownloadRequest(server, conn, senderId, recipientId, filePath)
 			continue
 		default:
-			BroadcastMessage(messageContent, server, user)
+			// Check if user is in a room and wants to send a room message
+			if user.CurrentRoomID != "" {
+				BroadcastRoomMessage(user.CurrentRoomID, user.Username, messageContent, server, user)
+			} else {
+				BroadcastMessage(messageContent, server, user)
+			}
 		}
 	}
 }
